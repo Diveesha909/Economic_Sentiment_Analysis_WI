@@ -1,0 +1,183 @@
+---
+title: "Inital finidings with CHHR and BDS"
+format: html
+---
+BDS Job Volatility (treatment/stressor)
+         ↓
+   Economic Stress → ↓Income, ↑Uncertainty
+         ↓
+CHRR Intermediate Stressors (mediators/controls)
+   (poverty, unemployment, food insecurity, etc.)
+         ↓
+CHRR Health Outcomes (dependent variable)
+   (premature death, poor mental/physical health days, etc.)
+
+
+Health related outcomes: 
+- Premature death
+-Physically unhealthy days
+Stress related outcomes
+- Mentally unhealthy days.   - include in mental health 
+- Frequent mental distress   - include in mental health. 
+Aggregate measures of health and stress.
+- Correlation between insured adults and uninsured adults in terms of health impacts?
+Economic stressors:
+-% Children in poverty
+- % Unemployed - could correlate with BDS volatility
+- % Family situation - how many are single parent vs double parent 
+- Behavioral stressors:
+- % Adult Smokers
+- % Obese
+
+
+BDS variables that can be used as treatment/stressor:
+-Job creation rate 
+-Job destruction rate
+- Net job creation rate
+- Reallcoation rate=Creation + Destruction - default explanatory variable.
+-Estab entry rate
+- Estab exit rate 
+└─pubdata:::pubdata_path(collection, me$path) at pubdata/R/pubdata.R:154:3```└─pubdata:::pubdata_path(collection, me$path) at pubdata/R/pubdata.R:154:3```
+Use the reallocation rate as the main explanatory variable, but also check robustness with the other measures of job volatility.
+reallocation_rate from 2022_st_cty(BDS collection) -- align year from CHHR also compare with COVID years. 
+2019,2020,2021. look for significant changes in the pandemic era. 
+
+
+DO EDA of all the variables i want to use. 
+
+STIMULUS??
+
+
+Mental unhealthy days and physically unhealthy days. WHICH VARIABLE TO FOCUS ON?
+
+We exepect mental health to be more associated with economic distress, but physical health can also be affected. We can analyze both, but we might want to prioritize mental health outcomes as they are more directly linked to economic stress.
+
+Do a stat test to see if the coeffiecent of economic distress has a bigger magnitude in the mental health model than the physical health model. 
+
+
+
+
+
+## More on Insights:
+
+
+
+Meeting Talking Points
+Economic Distress & Health Outcomes — Progress Update
+
+## Status:
+
+Still setting up the full pipeline — used Claude to test out preliminary models and get a sense of what the data looks like before committing to a final specification
+This is exploratory / proof-of-concept, not final results
+More years of data and the county-level BDS merge are still in progress
+
+
+What I've Done So Far
+
+-Loaded 2022 County Health Rankings for Wisconsin (72 counties)
+-Pulled BDS metro-level time series (1978–2022) for context
+-Ran full EDA on all 10 variables I plan to use
+-Built correlation matrix and scatter plots
+-Estimated 5 OLS models (economic-only and full specifications)
+-Ran a bootstrap test comparing mental vs physical health coefficient magnitudes
+-Looked at BDS pandemic-era volatility (2019–2022)
+
+
+Preliminary Findings
+Correlations are strong and all in the expected direction:
+
+Every economic stressor (unemployment, child poverty, single-parent households, uninsured rate) is positively and significantly correlated with both mental and physical unhealthy days (all p < 0.001)
+Children in poverty is the strongest single economic predictor — r = 0.82 for mental health, r = 0.88 for physical health
+
+Economic-only models explain a lot of variance:
+
+Mental unhealthy days ~ economic stressors: R² = 0.72
+Physical unhealthy days ~ economic stressors: R² = 0.81
+So even without behavioral controls, economic factors alone explain 72–81% of county-level variation
+
+Surprise finding — mental vs physical:
+
+We hypothesized mental health would be more sensitive to economic distress
+Preliminary results don't support that — physical health actually shows a slightly stronger association
+The bootstrap coefficient comparison test was not significant for any of the four economic variables
+This could change once we bring in the BDS reallocation rate as the treatment variable instead of static CHHR economic measures
+
+Multicollinearity is an issue in the full model:
+
+When I add smoking and obesity as controls, VIFs go above 200
+The full model R² jumps to 0.95–0.97, but individual coefficients lose significance because everything is correlated at the county level
+Need to think about whether to use PCA, drop variables, or use regularization
+
+BDS pandemic picture:
+
+Job destruction rate spiked +5.6 percentage points in 2021 (metro)
+Reallocation rate went up ~2 pp during COVID, but historically it's not extreme — the 1980s saw rates of 30–33%
+Big bounce-back in 2022: net job creation rate hit +5.15%
+Stimulus (CARES/ARPA) could be masking the true distress signal
+
+
+What Still Needs to Happen
+
+County-level BDS merge — I need to pull bds2022_st_cty from the pubdata package. The reallocation rate at the county level is supposed to be the main explanatory variable, and I haven't been able to merge it yet
+Multi-year CHHR data — I have the 2022 file but need 2019, 2020, 2021 main CHHR files to build a panel and test for COVID-era structural breaks. The 2019 WI state-specific file I found has different variables
+Address multicollinearity — probably PCA or just a more parsimonious model
+Consider stimulus controls — per-capita transfer payments could help isolate the real economic distress channel
+Revisit the mental vs physical hypothesis — might need to reframe, or the BDS reallocation variable could tell a different story than the static CHHR economic measures
+
+
+
+```{r setup, include=FALSE,message=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+library(pubdata)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(yaml)
+library(collapsibleTree)
+library(broom)
+library(DT)
+library(ggpubr)
+library(tidyverse)
+```
+
+```{r setup, include=FALSE,message=FALSE}
+chrr_path <- "/Users/divi/Desktop/APL Research/pubdata_cache/1771533079658_2025_County_Health_Rankings_Data_-_v4.csv"
+chrr_raw <- read_csv(chrr_path)
+
+```
+
+```{r setup, include=FALSE,message=FALSE}
+remotes::install_local("/Users/divi/Desktop/APL Research/Economic_Sentiment_Analysis/economic_sentiment_analysis/pubdata/pubdata")
+``` 
+
+
+# Next steps to do: 
+Task: Find in CHRR documentation what does the Year mean? Is it the year of data release or data measurement?
+
+different variables within the same CHRR release use different data years. Health outcomes (BRFSS-based) are lagged ~3 years from release. Economic measures (BLS/ACS-based) are lagged ~2 years. So within CHRR 2024, your health outcomes are from 2021 but your unemployment is from 2022.
+
+Performance optimization if data reading becomes a bottleneck:
+
+pubdata::path("chrr", "2025") %>%
+ open_dataset() %>%
+ filter(statecode == "55") %>%
+ collect()
+
+
+Use “2023_st_cty” instead of “2022_st_cty”.
+
+Add p5 p25 and p75 p95 to summary table
+
+Before doing statistical tests to compare phys vs mental coefficients, print all regression estimates.
+https://hughjonesd.github.io/huxtable/reference/huxreg.html
+
+Play with NotebookLM to research literature from the public health field. What do we already know about the effect of economic distress on physical and mental health?
+
+ANTON FORGOT TO MENTION ONE MORE THING:
+What about other states? Does this finding hold in the national context?
+
+
+

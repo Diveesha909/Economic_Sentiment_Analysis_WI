@@ -389,11 +389,12 @@ my_vars <- c(
   "v009_rawvalue", "v011_rawvalue"
 )
 
-chrr_national <- pubdata::path("chrr", "2024") %>%
-  open_dataset() %>%
-  filter(countycode != "000", variable %in% my_vars) %>%
-  collect() %>%
-  pivot_wider(names_from = variable, values_from = value) %>%
+chrr_national_clean <- pubdata::path("chrr", "2024") |>
+  open_dataset() |>
+  filter(year == 2024, countycode != "000", variable %in% my_vars) |>
+  select(fipscode, variable, value) |>
+  collect() |>
+  pivot_wider(id_cols = fipscode, names_from = variable, values_from = value) |>
   rename(
     premature_death = v001_rawvalue,
     phys_unhealthy = v036_rawvalue,
@@ -407,43 +408,41 @@ chrr_national <- pubdata::path("chrr", "2024") %>%
     obese = v011_rawvalue
   )
 
-# BDS national county level
-bds_national <- bds_raw |>
+cat("CHRR national counties:", nrow(chrr_national_clean), "\n")
+
+# --- BDS National ---
+bds_national_clean <- bds_raw |>
   filter(year == 2022) |>
   mutate(
     fipscode = paste0(st, cty),
-    across(
-      c(reallocation_rate, job_creation_rate, job_destruction_rate, net_job_creation_rate),
-      ~ as.numeric(na_if(as.character(.x), "X"))
-    )
+    reallocation_rate = as.numeric(na_if(as.character(reallocation_rate), "X"))
   ) |>
-  select(fipscode, reallocation_rate, job_creation_rate, 
-         job_destruction_rate, net_job_creation_rate)
+  select(fipscode, reallocation_rate)
 
-# National merge
-merged_national <- inner_join(chrr_national, bds_national, by = "fipscode")
-```
+cat("BDS national counties:", nrow(bds_national_clean), "\n")
 
-```{r}
+# --- Merge ---
+merged_national <- inner_join(chrr_national_clean, bds_national_clean, by = "fipscode")
+cat("Merged national:", nrow(merged_national), "\n")
+cat("NAs in reallocation:", sum(is.na(merged_national$reallocation_rate)), "\n")
+cat("NAs in mental_unhealthy:", sum(is.na(merged_national$mental_unhealthy)), "\n")
 
-# Verify how many non-NA rows exist for these variables
-merged_national |>
-  select(mental_unhealthy, child_poverty, unemployed, single_parent, uninsured, reallocation_rate) |>
-  na.omit() |>
-  nrow()
-
-# If the result is 0, check fixed bds_national logic and try the regression again
+# --- National model ---
 m_national <- lm(
-  mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured + reallocation_rate, 
-  data = merged_national, 
-  na.action = na.exclude
+  mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured + reallocation_rate,
+  data = merged_national
 )
-m_national <- lm(mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured + reallocation_rate, data = merged_national)
+
+# --- Comparison table ---
+# You need to re-create the WI models with the same spec if they don't exist yet
+m_pre_wi <- lm(mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured + reallocation_rate, data = pre_covid)
+m_post_wi <- lm(mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured + reallocation_rate, data = post_covid)
 
 huxreg(
-  "WI Pre-COVID" = m_pre_mental_bds,
-  "WI Post-COVID" = m_post_mental_bds,
-  "National" = m_national,
-  statistics = c("R squared" = "r.squared", "N" = "nobs")
+  "WI Pre-COVID" = m_pre_wi,
+  "WI Post-COVID" = m_post_wi,
+  "National 2022" = m_national,
+  statistics = c("R squared" = "r.squared", "Adj. R squared" = "adj.r.squared", "N" = "nobs")
 )
 ```
+
