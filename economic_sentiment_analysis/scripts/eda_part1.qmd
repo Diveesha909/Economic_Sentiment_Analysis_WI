@@ -1,0 +1,449 @@
+---
+title: "Economic_Sentiment_Analysis"
+author: "Diveesha Vanchireddy"
+format:
+  html:
+    date: today
+    toc: true
+    code-overflow: wrap
+    code-fold: true 
+    embed-resources: true
+    df-print: paged
+---
+
+
+## Data Setup: 
+1) How to pull bds2022_st_cty (now bds2023_st_cty) from pubdata? - got it. 
+2) How to merge BDS and CHRR using FIPS as composite key? - paste st X county but CHHR also has a FIPS code already so just going ot use that. 
+3) How to align years between BDS and CHRR? average CHHR 2022 = 2019-2020 surveyed data. 
+4) What about 2019, 2020, 2021 CHRR files for panel?
+
+## EDA tasks listed: 
+1) Descriptive stats of all variables (mean, median, sd, min, max)
+2) Correlation matrix of all variables to see initial relationships
+3) Time series plots of BDS reallocation rate and CHRR health outcomes over time
+4) Scatter plots of reallocation rate vs mental health and physical health outcomes
+5) Statistical tests comparing coefficients of economic distress in mental vs physical health models
+6) Analysis of BDS pandemic-era volatility (2019–2022) to see if there were significant changes during COVID years
+7) Robustness checks using other BDS measures of job volatility (job creation rate, job destruction rate, etc.) to see if results hold across different specifications
+
+
+# Main analytical questions to answer: 
+1) Mental unhealthy days vs physically unhealthy days — WHICH VARIABLE TO FOCUS ON?
+2)Is mental health more associated with economic distress than physical health? Do a stat test comparing coefficient magnitudes
+3) Correlation between insured vs uninsured adults in terms of health impacts?
+4) Does reallocation rate work as the main explanatory variable?
+5) Reallocation rate = default explanatory variable
+
+
+
+# Next steps:
+1) Aligning CHRR data.
+```{r}
+library(pubdata)
+library(tidyverse)
+get_merged_cross_section <- function(bds_year, chrr_offset = 2) {
+  chrr_year <- as.character(bds_year + chrr_offset)
+  chrr_raw <- pubdata::get("chrr", chrr_year)
+  my_vars <- c(
+    "v001_rawvalue", "v036_rawvalue", "v042_rawvalue", "v145_rawvalue",
+    "v024_rawvalue", "v023_rawvalue", "v082_rawvalue", "v085_rawvalue",
+    "v009_rawvalue", "v011_rawvalue"
+  )
+  
+  chrr_wi <- chrr_raw |>
+    filter(statecode == "55", countycode != "000", variable %in% my_vars) |>
+    select(fipscode, county, variable, value) |>
+    pivot_wider(names_from = variable, values_from = value) |>
+    rename(
+      premature_death = v001_rawvalue,
+      phys_unhealthy = v036_rawvalue,
+      mental_unhealthy = v042_rawvalue,
+      freq_mental_distress = v145_rawvalue,
+      child_poverty = v024_rawvalue,
+      unemployed = v023_rawvalue,
+      single_parent = v082_rawvalue,
+      uninsured = v085_rawvalue,
+      smokers = v009_rawvalue,
+      obese = v011_rawvalue
+    )
+  
+ bds_slice <- bds_wi |>
+    filter(year == bds_year) |>
+    select(fipscode, reallocation_rate, job_creation_rate, job_destruction_rate,
+           net_job_creation_rate, estabs_entry_rate, estabs_exit_rate)
+ result <- inner_join(chrr_wi, bds_slice, by = "fipscode") |>
+    mutate(bds_year = bds_year, chrr_release = as.integer(chrr_year))
+  return(result)
+
+}
+
+```
+```{r}
+
+bds_raw <- pubdata::get("bds", "2022_st_cty") # swtich to 2023_st_cty becuase more recent and pandemic era data. 
+bds_wi <- bds_raw |>
+  filter(st == "55") |>
+  mutate(
+    fipscode = paste0(st, cty),
+    year = as.integer(year),
+    across(
+      c(job_creation_rate, job_destruction_rate, net_job_creation_rate,
+        reallocation_rate, estabs_entry_rate, estabs_exit_rate),
+      ~as.numeric(replace(.x, .x == "X", NA))
+    )
+  )
+```
+```{r}
+# Pre-COVID cross-section
+pre_covid <- get_merged_cross_section(2019)
+
+# Post-COVID cross-section
+post_covid <- get_merged_cross_section(2022)
+
+#get both
+both <- bind_rows(pre_covid, post_covid)
+both |>
+  select(fipscode, bds_year, premature_death:obese) |>
+  pivot_longer(premature_death:obese) |>
+  ggplot(aes(x = value, fill = factor(bds_year))) +
+  geom_histogram(bins = 20, alpha = 0.6, position = "identity") +
+  facet_wrap(~name, scales = "free") +
+  labs(fill = "BDS Year")
+  
+
+# Check what you got
+cat("Pre-COVID:", nrow(pre_covid), "counties\n")
+cat("Post-COVID:", nrow(post_covid), "counties\n")
+```
+
+
+
+## Performing EDA on the merged dataset:
+- We have successfully merged the BDS and CHRR datasets using FIPS codes, creating a comprehensive dataset for analysis.
+## getting descriptive stats for all variables in this one cross-section dataset:
+
+```{r}
+desc_stats <- both |>
+  select(bds_year, premature_death:obese, reallocation_rate,
+         job_creation_rate, job_destruction_rate, net_job_creation_rate) |>
+  pivot_longer(-bds_year, names_to = "variable", values_to = "value") |>
+  group_by(bds_year, variable) |>
+  summarise(
+    n = sum(!is.na(value)),
+    mean = round(mean(value, na.rm = TRUE), 3),
+    sd = round(sd(value, na.rm = TRUE), 3),
+    min = round(min(value, na.rm = TRUE), 3),
+    p5 = round(quantile(value, 0.05, na.rm = TRUE), 3),
+    p25 = round(quantile(value, 0.25, na.rm = TRUE), 3),
+    median = round(median(value, na.rm = TRUE), 3),
+    p75 = round(quantile(value, 0.75, na.rm = TRUE), 3),
+    p95 = round(quantile(value, 0.95, na.rm = TRUE), 3),
+    max = round(max(value, na.rm = TRUE), 3),
+    na_count = sum(is.na(value)),
+    .groups = "drop"
+  ) |>
+  arrange(variable, bds_year)
+
+desc_stats |> print(n = 40)
+
+
+```
+
+
+## Correlation matrix of all variables to see initial relationships:
+```{r}
+library(corrplot)
+
+# All CHRR + BDS variables for pre-covid
+cor_vars <- c("premature_death", "phys_unhealthy", "mental_unhealthy", 
+              "freq_mental_distress", "child_poverty", "unemployed", 
+              "single_parent", "uninsured", "smokers", "obese",
+              "reallocation_rate", "job_creation_rate", "job_destruction_rate",
+              "net_job_creation_rate")
+
+cor_pre <- pre_covid |>
+  select(all_of(cor_vars)) |>
+  cor(use = "pairwise.complete.obs")
+
+cor_post <- post_covid |>
+  select(all_of(cor_vars)) |>
+  cor(use = "pairwise.complete.obs")
+
+# Plot pre-covid
+corrplot(cor_pre, method = "color", type = "lower",
+         addCoef.col = "black", number.cex = 0.45, tl.cex = 0.6,
+         col = colorRampPalette(c("#3498DB", "white", "#E74C3C"))(200),
+         title = "Pre-COVID (BDS 2019 × CHRR 2021)", mar = c(0,0,2,0))
+
+# Plot post-covid
+corrplot(cor_post, method = "color", type = "lower",
+         addCoef.col = "black", number.cex = 0.45, tl.cex = 0.6,
+         col = colorRampPalette(c("#3498DB", "white", "#E74C3C"))(200),
+         title = "Post-COVID (BDS 2022 × CHRR 2024)", mar = c(0,0,2,0))
+```
+
+## Scatter plots of reallocation rate vs mental health and physical health outcomes:
+```{r}
+# Reallocation vs both health outcomes, both periods
+both |>
+  pivot_longer(c(mental_unhealthy, phys_unhealthy),
+               names_to = "outcome", values_to = "days") |>
+  mutate(outcome = ifelse(outcome == "mental_unhealthy", 
+                          "Mental Unhealthy Days", "Physical Unhealthy Days")) |>
+  ggplot(aes(x = reallocation_rate, y = days)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  facet_grid(outcome ~ bds_year, scales = "free") +
+  labs(title = "Reallocation Rate vs Health Outcomes",
+       x = "Reallocation Rate (%)", y = "Avg Unhealthy Days / Month") +
+  theme_minimal()
+
+# Also do child poverty since it's your strongest predictor
+both |>
+  pivot_longer(c(mental_unhealthy, phys_unhealthy),
+               names_to = "outcome", values_to = "days") |>
+  mutate(outcome = ifelse(outcome == "mental_unhealthy", 
+                          "Mental Unhealthy Days", "Physical Unhealthy Days")) |>
+  ggplot(aes(x = child_poverty, y = days)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  facet_grid(outcome ~ bds_year, scales = "free") +
+  labs(title = "Child Poverty vs Health Outcomes",
+       x = "Children in Poverty (%)", y = "Avg Unhealthy Days / Month") +
+  theme_minimal()
+
+# All 4 economic stressors vs both outcomes — post-covid only to keep it readable
+post_covid |>
+  pivot_longer(c(child_poverty, unemployed, single_parent, uninsured),
+               names_to = "stressor", values_to = "stressor_val") |>
+  pivot_longer(c(mental_unhealthy, phys_unhealthy),
+               names_to = "outcome", values_to = "days") |>
+  ggplot(aes(x = stressor_val, y = days)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  facet_grid(outcome ~ stressor, scales = "free") +
+  labs(title = "Economic Stressors vs Health Outcomes (Post-COVID)",
+       x = "Stressor Value", y = "Avg Unhealthy Days / Month") +
+  theme_minimal()
+```
+
+## Statistical tests comparing coefficients of economic distress in mental vs physical health models:
+```{r}
+library(broom)
+install.packages("huxtable")
+library(huxtable)
+
+# Run economic-only models for both outcomes, both periods
+models <- list(
+  pre_mental = lm(mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured, data = pre_covid),
+  pre_phys = lm(phys_unhealthy ~ child_poverty + unemployed + single_parent + uninsured, data = pre_covid),
+  post_mental = lm(mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured, data = post_covid),
+  post_phys = lm(phys_unhealthy ~ child_poverty + unemployed + single_parent + uninsured, data = post_covid)
+)
+
+huxreg(
+  "Pre: Mental" = models$pre_mental,
+  "Pre: Physical" = models$pre_phys,
+  "Post: Mental" = models$post_mental,
+  "Post: Physical" = models$post_phys,
+  statistics = c("R squared" = "r.squared", "Adj. R squared" = "adj.r.squared", "N" = "nobs")
+)
+
+# Compare coefficients side by side
+coef_comparison <- map_dfr(names(models), function(name) {
+  tidy(models[[name]]) |>
+    mutate(model = name)
+}) |>
+  separate(model, into = c("period", "outcome"), sep = "_") |>
+  select(period, outcome, term, estimate, std.error, p.value) |>
+  filter(term != "(Intercept)")
+
+coef_comparison |> 
+  pivot_wider(names_from = outcome, values_from = c(estimate, std.error, p.value)) |>
+  mutate(
+    coef_diff = estimate_mental - estimate_phys,
+    mental_bigger = abs(estimate_mental) > abs(estimate_phys)
+  ) |>
+  print()
+
+# Bootstrap test for child_poverty coefficient difference
+set.seed(42)
+n_boot <- 2000
+
+boot_pre <- replicate(n_boot, {
+  idx <- sample(nrow(pre_covid), replace = TRUE)
+  d <- pre_covid[idx, ]
+  m_m <- lm(mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured, data = d)
+  m_p <- lm(phys_unhealthy ~ child_poverty + unemployed + single_parent + uninsured, data = d)
+  coef(m_m)["child_poverty"] - coef(m_p)["child_poverty"]
+})
+
+boot_post <- replicate(n_boot, {
+  idx <- sample(nrow(post_covid), replace = TRUE)
+  d <- post_covid[idx, ]
+  m_m <- lm(mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured, data = d)
+  m_p <- lm(phys_unhealthy ~ child_poverty + unemployed + single_parent + uninsured, data = d)
+  coef(m_m)["child_poverty"] - coef(m_p)["child_poverty"]
+})
+
+cat("--- Child Poverty: Mental vs Physical Coefficient ---\n\n")
+cat("Pre-COVID:\n")
+cat("  Mean diff:", round(mean(boot_pre), 4), "\n")
+cat("  95% CI: [", round(quantile(boot_pre, 0.025), 4), ",", round(quantile(boot_pre, 0.975), 4), "]\n")
+cat("  Significant:", !between(0, quantile(boot_pre, 0.025), quantile(boot_pre, 0.975)), "\n\n")
+
+cat("Post-COVID:\n")
+cat("  Mean diff:", round(mean(boot_post), 4), "\n")
+cat("  95% CI: [", round(quantile(boot_post, 0.025), 4), ",", round(quantile(boot_post, 0.975), 4), "]\n")
+cat("  Significant:", !between(0, quantile(boot_post, 0.025), quantile(boot_post, 0.975)), "\n")
+
+# Plot both bootstrap distributions
+bind_rows(
+  tibble(diff = boot_pre, period = "Pre-COVID"),
+  tibble(diff = boot_post, period = "Post-COVID")
+) |>
+  ggplot(aes(x = diff, fill = period)) +
+  geom_histogram(bins = 50, alpha = 0.6, position = "identity") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Bootstrap: Mental vs Physical Sensitivity to Child Poverty",
+       subtitle = "Difference in coefficients (mental - physical). Red line = 0.",
+       x = "Coefficient Difference", y = "Count", fill = NULL) +
+  theme_minimal()
+
+
+```
+
+## Q7Robustness checks using other BDS measures of job volatility (job creation rate, job destruction rate, etc.) to see if results hold across different specifications
+```{r}
+# Run mental health model with each BDS variable separately, both periods
+bds_measures <- c("reallocation_rate", "job_creation_rate", "job_destruction_rate",
+                  "net_job_creation_rate", "estabs_entry_rate", "estabs_exit_rate")
+
+robustness <- map_dfr(bds_measures, function(bds_var) {
+  
+  formula_str <- paste("mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured +", bds_var)
+  f <- as.formula(formula_str)
+  
+  m_pre <- lm(f, data = pre_covid)
+  m_post <- lm(f, data = post_covid)
+  
+  bind_rows(
+    tidy(m_pre) |> filter(term == bds_var) |>
+      mutate(period = "pre_covid", r_squared = summary(m_pre)$r.squared),
+    tidy(m_post) |> filter(term == bds_var) |>
+      mutate(period = "post_covid", r_squared = summary(m_post)$r.squared)
+  )
+}) |>
+  select(period, term, estimate, std.error, p.value, r_squared) |>
+  mutate(
+    significant = p.value < 0.05,
+    across(c(estimate, std.error, p.value, r_squared), ~round(.x, 4))
+  )
+
+robustness |> print(n = 20)
+
+# Same for physical health
+robustness_phys <- map_dfr(bds_measures, function(bds_var) {
+  
+  formula_str <- paste("phys_unhealthy ~ child_poverty + unemployed + single_parent + uninsured +", bds_var)
+  f <- as.formula(formula_str)
+  
+  m_pre <- lm(f, data = pre_covid)
+  m_post <- lm(f, data = post_covid)
+  
+  bind_rows(
+    tidy(m_pre) |> filter(term == bds_var) |>
+      mutate(period = "pre_covid", r_squared = summary(m_pre)$r.squared, outcome = "physical"),
+    tidy(m_post) |> filter(term == bds_var) |>
+      mutate(period = "post_covid", r_squared = summary(m_post)$r.squared, outcome = "physical")
+  )
+})
+
+robustness_all <- bind_rows(
+  robustness |> mutate(outcome = "mental"),
+  robustness_phys
+) |>
+  select(period, outcome, term, estimate, p.value, r_squared, significant) |>
+  arrange(term, period, outcome)
+
+robustness_all |> print(n = 30)
+```
+
+
+The mean diff is -1.177, and the CI is [-2.21, -0.10] — entirely below zero. The negative sign means the physical health coefficient is LARGER than the mental health coefficient. So pre-COVID, a 1 percentage point increase in child poverty is associated with roughly 1.2 more physically unhealthy days than mentally unhealthy days.This is the opposite of your original hypothesis. You expected mental health to be more sensitive, but physical health is actually more responsive to economic distress — and significantly so.
+
+
+## Question 8: What about other states? Does this finding hold in the national context?
+```{r}
+# Load necessary libraries
+library(pubdata)
+library(dplyr)
+library(tidyr)
+library(arrow)
+
+# National CHRR — all counties, all states
+my_vars <- c(
+  "v001_rawvalue", "v036_rawvalue", "v042_rawvalue", "v145_rawvalue",
+  "v024_rawvalue", "v023_rawvalue", "v082_rawvalue", "v085_rawvalue",
+  "v009_rawvalue", "v011_rawvalue"
+)
+
+chrr_national <- pubdata::path("chrr", "2024") %>%
+  open_dataset() %>%
+  filter(countycode != "000", variable %in% my_vars) %>%
+  collect() %>%
+  pivot_wider(names_from = variable, values_from = value) %>%
+  rename(
+    premature_death = v001_rawvalue,
+    phys_unhealthy = v036_rawvalue,
+    mental_unhealthy = v042_rawvalue,
+    freq_mental_distress = v145_rawvalue,
+    child_poverty = v024_rawvalue,
+    unemployed = v023_rawvalue,
+    single_parent = v082_rawvalue,
+    uninsured = v085_rawvalue,
+    smokers = v009_rawvalue,
+    obese = v011_rawvalue
+  )
+
+# BDS national county level
+bds_national <- bds_raw |>
+  filter(year == 2022) |>
+  mutate(
+    fipscode = paste0(st, cty),
+    across(
+      c(reallocation_rate, job_creation_rate, job_destruction_rate, net_job_creation_rate),
+      ~ as.numeric(na_if(as.character(.x), "X"))
+    )
+  ) |>
+  select(fipscode, reallocation_rate, job_creation_rate, 
+         job_destruction_rate, net_job_creation_rate)
+
+# National merge
+merged_national <- inner_join(chrr_national, bds_national, by = "fipscode")
+```
+
+```{r}
+
+# Verify how many non-NA rows exist for these variables
+merged_national |>
+  select(mental_unhealthy, child_poverty, unemployed, single_parent, uninsured, reallocation_rate) |>
+  na.omit() |>
+  nrow()
+
+# If the result is 0, check fixed bds_national logic and try the regression again
+m_national <- lm(
+  mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured + reallocation_rate, 
+  data = merged_national, 
+  na.action = na.exclude
+)
+m_national <- lm(mental_unhealthy ~ child_poverty + unemployed + single_parent + uninsured + reallocation_rate, data = merged_national)
+
+huxreg(
+  "WI Pre-COVID" = m_pre_mental_bds,
+  "WI Post-COVID" = m_post_mental_bds,
+  "National" = m_national,
+  statistics = c("R squared" = "r.squared", "N" = "nobs")
+)
+```
